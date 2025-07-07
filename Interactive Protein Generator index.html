@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Protein Generator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            overflow: hidden; /* Prevent scrollbars from appearing during layout shifts */
+        }
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 0;
+        }
+        .controls-panel {
+            z-index: 10;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white">
+
+    <div id="canvas-container"></div>
+
+    <div class="controls-panel absolute top-0 left-0 p-6 max-w-sm w-full md:w-auto">
+        <div class="bg-gray-800 bg-opacity-80 backdrop-blur-md p-6 rounded-2xl shadow-2xl border border-gray-700">
+            <h1 class="text-2xl font-bold mb-1 text-cyan-400">Protein Generator</h1>
+            <p class="text-sm text-gray-400 mb-6">Define a function and watch a protein fold to achieve it.</p>
+
+            <div class="space-y-6">
+                <div>
+                    <label for="function-select" class="block text-sm font-medium text-gray-300 mb-2">Desired Function</label>
+                    <select id="function-select" class="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-3 py-2 text-sm focus:ring-cyan-500 focus:border-cyan-500">
+                        <option value="none" selected>None (Random Fold)</option>
+                        <option value="pocket_small">Create Small Binding Pocket</option>
+                        <option value="pocket_large">Create Large Binding Pocket</option>
+                        <option value="linear_core">Form a Linear Hydrophobic Core</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label for="chain-length" class="block text-sm font-medium text-gray-300 mb-2">Polypeptide Chain Length</label>
+                    <input type="range" id="chain-length" min="20" max="100" value="50" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                    <span id="chain-length-value" class="text-xs text-gray-400 text-right block mt-1">50 amino acids</span>
+                </div>
+                 <div>
+                    <label for="hydrophobicity" class="block text-sm font-medium text-gray-300 mb-2">Hydrophobicity Ratio</label>
+                    <input type="range" id="hydrophobicity" min="0.1" max="0.9" step="0.05" value="0.4" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                    <span id="hydrophobicity-value" class="text-xs text-gray-400 text-right block mt-1">40% Hydrophobic</span>
+                </div>
+            </div>
+
+            <div class="mt-8 flex flex-col space-y-3">
+                <button id="start-button" class="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-bold py-3 px-4 rounded-lg transition-all duration-300 shadow-lg">
+                    Generate & Fold Protein
+                </button>
+                <button id="reset-camera-button" class="w-full bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded-lg transition-all duration-300 text-sm">
+                    Reset Camera
+                </button>
+            </div>
+            
+            <div id="status" class="mt-6 text-center text-sm text-yellow-400 h-5"></div>
+        </div>
+    </div>
+    
+    <div class="absolute bottom-4 right-4 text-xs text-gray-500 bg-gray-900 bg-opacity-50 p-2 rounded">
+        Click and drag to rotate the view.
+    </div>
+
+
+    <script type="module">
+        // --- Basic Setup ---
+        const canvasContainer = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, canvasContainer.offsetWidth / canvasContainer.offsetHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(canvasContainer.offsetWidth, canvasContainer.offsetHeight);
+        canvasContainer.appendChild(renderer.domElement);
+
+        // --- Lighting ---
+        const ambientLight = new THREE.AmbientLight(0xcccccc, 0.8);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(5, 10, 7.5);
+        scene.add(directionalLight);
+
+        // --- Controls & UI Elements ---
+        const startBtn = document.getElementById('start-button');
+        const resetCamBtn = document.getElementById('reset-camera-button');
+        const functionSelect = document.getElementById('function-select');
+        const chainLengthInput = document.getElementById('chain-length');
+        const chainLengthValue = document.getElementById('chain-length-value');
+        const hydrophobicityInput = document.getElementById('hydrophobicity');
+        const hydrophobicityValue = document.getElementById('hydrophobicity-value');
+        const statusEl = document.getElementById('status');
+        
+        // --- Global State ---
+        let proteinChain = [];
+        let simulationFrameId;
+        let targetObject = null; // For functional targets
+
+        // --- Camera Controls (Mouse Drag) ---
+        let isDragging = false;
+        let previousMousePosition = { x: 0, y: 0 };
+        
+        function onMouseDown(e) { isDragging = true; }
+        function onMouseUp(e) { isDragging = false; }
+        function onMouseMove(e) {
+            if (!isDragging) return;
+            const deltaMove = {
+                x: e.offsetX - previousMousePosition.x,
+                y: e.offsetY - previousMousePosition.y
+            };
+
+            const rotationSpeed = 0.005;
+            scene.rotation.y += deltaMove.x * rotationSpeed;
+            scene.rotation.x += deltaMove.y * rotationSpeed;
+
+            previousMousePosition = { x: e.offsetX, y: e.offsetY };
+        }
+        
+        renderer.domElement.addEventListener('mousedown', onMouseDown);
+        renderer.domElement.addEventListener('mouseup', onMouseUp);
+        renderer.domElement.addEventListener('mouseleave', onMouseUp); // Stop dragging if mouse leaves canvas
+        renderer.domElement.addEventListener('mousemove', onMouseMove);
+
+        // --- Event Listeners ---
+        startBtn.addEventListener('click', runSimulation);
+        resetCamBtn.addEventListener('click', resetCamera);
+        chainLengthInput.addEventListener('input', () => chainLengthValue.textContent = `${chainLengthInput.value} amino acids`);
+        hydrophobicityInput.addEventListener('input', () => hydrophobicityValue.textContent = `${Math.round(hydrophobicityInput.value * 100)}% Hydrophobic`);
+        window.addEventListener('resize', onWindowResize);
+
+        // --- Core Functions ---
+
+        function onWindowResize() {
+            camera.aspect = canvasContainer.offsetWidth / canvasContainer.offsetHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(canvasContainer.offsetWidth, canvasContainer.offsetHeight);
+        }
+
+        function resetCamera() {
+            camera.position.z = 30;
+            camera.position.x = 0;
+            camera.position.y = 0;
+            scene.rotation.set(0, 0, 0);
+            camera.lookAt(scene.position);
+        }
+
+        function clearScene() {
+            // Cancel any ongoing animation
+            if (simulationFrameId) {
+                cancelAnimationFrame(simulationFrameId);
+            }
+            
+            // Remove all objects from the scene
+            while(scene.children.length > 0){ 
+                const object = scene.children[0];
+                if(object.geometry) object.geometry.dispose();
+                if(object.material) {
+                    if (Array.isArray(object.material)) {
+                        object.material.forEach(material => material.dispose());
+                    } else {
+                        object.material.dispose();
+                    }
+                }
+                scene.remove(object); 
+            }
+            
+            // Re-add essential lights
+            scene.add(ambientLight);
+            scene.add(directionalLight);
+            
+            proteinChain = [];
+            targetObject = null;
+        }
+
+        function createProteinChain(length, hydrophobicRatio) {
+            const aminoAcids = [];
+            const sphereGeometry = new THREE.SphereGeometry(0.5, 16, 16);
+            const bondGeometry = new THREE.CylinderGeometry(0.1, 0.1, 1, 8);
+
+            for (let i = 0; i < length; i++) {
+                const isHydrophobic = Math.random() < hydrophobicRatio;
+                const color = isHydrophobic ? 0xffa500 : 0x00bfff; // Orange for hydrophobic, Blue for hydrophilic
+                const material = new THREE.MeshStandardMaterial({ color });
+                const sphere = new THREE.Mesh(sphereGeometry, material);
+                
+                // Start in a random coil
+                sphere.position.set(
+                    (Math.random() - 0.5) * length * 0.5,
+                    (Math.random() - 0.5) * length * 0.5,
+                    (Math.random() - 0.5) * length * 0.5
+                );
+                
+                const aminoAcid = {
+                    mesh: sphere,
+                    isHydrophobic: isHydrophobic,
+                    velocity: new THREE.Vector3(),
+                    bond: null // Will hold the cylinder mesh
+                };
+                
+                aminoAcids.push(aminoAcid);
+                scene.add(sphere);
+                
+                // Add bond to previous amino acid
+                if (i > 0) {
+                    const bondMaterial = new THREE.MeshStandardMaterial({ color: 0xaaaaaa });
+                    const bondMesh = new THREE.Mesh(bondGeometry, bondMaterial);
+                    aminoAcids[i-1].bond = bondMesh;
+                    scene.add(bondMesh);
+                }
+            }
+            return aminoAcids;
+        }
+        
+        function updateBonds() {
+            for (let i = 0; i < proteinChain.length - 1; i++) {
+                const p1 = proteinChain[i].mesh.position;
+                const p2 = proteinChain[i+1].mesh.position;
+                const bond = proteinChain[i].bond;
+
+                if (bond) {
+                    const distance = p1.distanceTo(p2);
+                    bond.scale.y = distance;
+                    bond.position.copy(p1).add(p2).divideScalar(2);
+                    bond.lookAt(p2);
+                    bond.rotateX(Math.PI / 2); // Align cylinder axis
+                }
+            }
+        }
+
+        function createTarget(functionType) {
+            if (targetObject) scene.remove(targetObject);
+            if (functionType === 'none') {
+                targetObject = null;
+                return;
+            }
+
+            let geometry;
+            if (functionType === 'pocket_small') {
+                 geometry = new THREE.BoxGeometry(2, 2, 2);
+            } else if (functionType === 'pocket_large') {
+                 geometry = new THREE.BoxGeometry(4, 4, 4);
+            } else if (functionType === 'linear_core') {
+                 geometry = new THREE.CylinderGeometry(0.5, 0.5, 10, 16);
+            } else {
+                return;
+            }
+
+            const material = new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true });
+            targetObject = new THREE.Mesh(geometry, material);
+            targetObject.position.set(0, 0, 0);
+            scene.add(targetObject);
+        }
+
+        function runSimulation() {
+            clearScene();
+            statusEl.textContent = "Generating...";
+            
+            // Disable button during simulation
+            startBtn.disabled = true;
+            startBtn.textContent = "Folding...";
+            startBtn.classList.add('bg-gray-500', 'hover:bg-gray-500');
+            startBtn.classList.remove('bg-cyan-600', 'hover:bg-cyan-500');
+
+            setTimeout(() => {
+                const length = parseInt(chainLengthInput.value);
+                const ratio = parseFloat(hydrophobicityInput.value);
+                proteinChain = createProteinChain(length, ratio);
+                createTarget(functionSelect.value);
+                resetCamera();
+                
+                statusEl.textContent = "Folding in progress...";
+                animate();
+                
+                // Set a timeout to end the simulation
+                setTimeout(() => {
+                    cancelAnimationFrame(simulationFrameId);
+                    statusEl.textContent = "Folding complete.";
+                    startBtn.disabled = false;
+                    startBtn.textContent = "Generate & Fold Protein";
+                    startBtn.classList.remove('bg-gray-500', 'hover:bg-gray-500');
+                    startBtn.classList.add('bg-cyan-600', 'hover:bg-cyan-500');
+                }, 15000); // Run for 15 seconds
+
+            }, 100); // Short delay to allow UI to update
+        }
+
+        function applyForces() {
+            const centerOfMass = new THREE.Vector3();
+            proteinChain.forEach(p => centerOfMass.add(p.mesh.position));
+            centerOfMass.divideScalar(proteinChain.length);
+
+            const functionType = functionSelect.value;
+            const targetSize = targetObject ? (targetObject.geometry.parameters.width || targetObject.geometry.parameters.radiusTop * 2) : 0;
+
+            for (let i = 0; i < proteinChain.length; i++) {
+                const p_i = proteinChain[i];
+                let force = new THREE.Vector3();
+
+                // 1. Bond spring force (keeps chain together)
+                const bondLength = 1.0;
+                const bondStrength = 0.1;
+                if (i > 0) {
+                    const p_prev = proteinChain[i-1];
+                    const diff = p_i.mesh.position.clone().sub(p_prev.mesh.position);
+                    const dist = diff.length();
+                    force.add(diff.normalize().multiplyScalar((bondLength - dist) * bondStrength));
+                }
+                if (i < proteinChain.length - 1) {
+                    const p_next = proteinChain[i+1];
+                    const diff = p_i.mesh.position.clone().sub(p_next.mesh.position);
+                    const dist = diff.length();
+                    force.add(diff.normalize().multiplyScalar((bondLength - dist) * bondStrength));
+                }
+
+                // 2. Repulsion force (prevents overlap)
+                const repulsionStrength = 0.1;
+                for (let j = 0; j < proteinChain.length; j++) {
+                    if (i === j) continue;
+                    const p_j = proteinChain[j];
+                    const diff = p_i.mesh.position.clone().sub(p_j.mesh.position);
+                    const dist = diff.length();
+                    if (dist < 2.0) {
+                        force.add(diff.normalize().multiplyScalar(repulsionStrength / (dist * dist)));
+                    }
+                }
+
+                // 3. Hydrophobic collapse force
+                const hydrophobicStrength = 0.02;
+                if (p_i.isHydrophobic) {
+                    const toCenter = centerOfMass.clone().sub(p_i.mesh.position);
+                    force.add(toCenter.normalize().multiplyScalar(hydrophobicStrength));
+                }
+
+                // 4. Functional forces
+                const functionStrength = 0.05;
+                if (functionType.startsWith('pocket') && !p_i.isHydrophobic) { // Hydrophilic residues form the pocket
+                    const distToCenter = p_i.mesh.position.length();
+                    const idealDist = targetSize / 2 + 1.0; // Stay just outside the target
+                    const diff = distToCenter - idealDist;
+                    const toCenter = p_i.mesh.position.clone().normalize().multiplyScalar(-1);
+                    force.add(toCenter.multiplyScalar(diff * functionStrength));
+                }
+                if (functionType === 'linear_core' && p_i.isHydrophobic) {
+                    // Force towards the y-axis
+                    const posOnY = new THREE.Vector3(0, p_i.mesh.position.y, 0);
+                    const toYAxis = posOnY.sub(p_i.mesh.position);
+                    // Clamp y position within target cylinder height
+                    if (Math.abs(p_i.mesh.position.y) > targetSize / 2) {
+                        toYAxis.y -= Math.sign(p_i.mesh.position.y) * 0.5;
+                    }
+                    force.add(toYAxis.multiplyScalar(functionStrength * 2));
+                }
+
+
+                // Update velocity and position
+                p_i.velocity.add(force);
+                p_i.velocity.multiplyScalar(0.8); // Damping
+                p_i.mesh.position.add(p_i.velocity);
+            }
+        }
+
+        function animate() {
+            simulationFrameId = requestAnimationFrame(animate);
+            
+            if (proteinChain.length > 0) {
+                applyForces();
+                updateBonds();
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Initial setup
+        resetCamera();
+        onWindowResize();
+
+    </script>
+</body>
+</html>
